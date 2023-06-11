@@ -21,7 +21,7 @@
 //
 //               We recommend viewing Example 6 before viewing this example.
 
-#include "mfem.hpp"
+#include "../mfem.hpp"
 #include <fstream>
 #include <iostream>
 #include <cmath>
@@ -31,6 +31,7 @@ using namespace std;
 using namespace mfem;
 
 double exact_solution(const Vector &x);
+void exact_solution_grad(const Vector &x, Vector &u);
 double f_function(const Vector &x);
 
 int main(int argc, char *argv[])
@@ -121,6 +122,7 @@ int main(int argc, char *argv[])
    // Define the FunctionCofficient of the exact solution, this is u = 1/(1+x²+y²)
    // This is made to then compare the solution obtained with the exact one
    FunctionCoefficient solution_coef(exact_solution);
+   VectorFunctionCoefficient solution_coef_grad(dim, exact_solution_grad);
 
    // 9. All boundary attributes will be used for essential (Dirichlet) BC.
    MFEM_VERIFY(mesh.bdr_attributes.Size() > 0,
@@ -152,6 +154,20 @@ int main(int argc, char *argv[])
    //     The refiner will call the given error estimator.
    ThresholdRefiner refiner(estimator);
    refiner.SetTotalErrorFraction(0.7);
+
+   ThresholdDerefiner derefiner(estimator);
+   derefiner.SetThreshold(0.7);
+
+   ParaViewDataCollection *pd = NULL;
+   pd = new ParaViewDataCollection("EX6_EXTENDED", &mesh);
+   pd->SetPrefixPath("ParaView");
+   pd->RegisterField("solution", &x);
+   pd->SetLevelsOfDetail(order);
+   pd->SetDataFormat(VTKFormat::BINARY);
+   pd->SetHighOrderOutput(true);
+   pd->SetCycle(0);
+   pd->SetTime(0.0);
+   pd->Save();
 
    // 13. The main AMR loop. In each iteration we solve the problem on the
    //     current mesh, visualize the solution, and refine the mesh.
@@ -211,28 +227,9 @@ int main(int argc, char *argv[])
       //     from true DOFs (it may therefore happen that x.Size() >= X.Size()).
       a.RecoverFEMSolution(X, b, x);
 
-      // Export the results to Paraview in step 5 and 16
-      if (it == 5){
-         ParaViewDataCollection paraview_dc("AMR_IT5", &mesh);
-         paraview_dc.SetPrefixPath("ParaView");
-         paraview_dc.SetLevelsOfDetail(order);
-         paraview_dc.SetCycle(0);
-         paraview_dc.SetDataFormat(VTKFormat::BINARY);
-         paraview_dc.SetHighOrderOutput(true);
-         paraview_dc.SetTime(0.0); // set the time
-         paraview_dc.RegisterField("solution", &x);
-         paraview_dc.Save();
-      }else if(it == 16){
-         ParaViewDataCollection paraview_dc("AMR_IT16", &mesh);
-         paraview_dc.SetPrefixPath("ParaView");
-         paraview_dc.SetLevelsOfDetail(order);
-         paraview_dc.SetCycle(0);
-         paraview_dc.SetDataFormat(VTKFormat::BINARY);
-         paraview_dc.SetHighOrderOutput(true);
-         paraview_dc.SetTime(0.0); // set the time
-         paraview_dc.RegisterField("solution", &x);
-         paraview_dc.Save();
-      }
+      pd->SetCycle(it);
+      pd->SetTime(it);
+      pd->Save();
 
       // 20. Send solution by socket to the GLVis server.
       if (visualization && sol_sock.good())
@@ -242,11 +239,10 @@ int main(int argc, char *argv[])
       }
 
       // Compute the error with the exact solution defined previously using
-      // L_1 and L_2 norms
+      // H1 norm
       fout << std::fixed << std::showpoint;
       fout << std::setprecision(12);
-      fout << "L_1 Error: " << x.ComputeL1Error(solution_coef) <<'\n';
-      fout << "L_2 Error: " << x.ComputeL2Error(solution_coef) <<'\n';
+      fout << "H_1 Error: " << x.ComputeH1Error(&solution_coef, &solution_coef_grad, &one, 1.0, 1) <<'\n';
 
       if (cdofs > max_dofs)
       {
@@ -279,32 +275,44 @@ int main(int argc, char *argv[])
       a.Update();
       b.Update();
    }
-
+   cout << "Degrees of freedom " << fespace.GetTrueVSize() << '\n';
    // Stop the timer and output the duration time
    auto stop = std::chrono::high_resolution_clock::now();
    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
    fout << duration.count() << endl;
-
-   // Export the solution in its last step to Paraview
-   ParaViewDataCollection paraview_dc("AMR_Final", &mesh);
-   paraview_dc.SetPrefixPath("ParaView");
-   paraview_dc.SetLevelsOfDetail(order);
-   paraview_dc.SetCycle(0);
-   paraview_dc.SetDataFormat(VTKFormat::BINARY);
-   paraview_dc.SetHighOrderOutput(true);
-   paraview_dc.SetTime(0.0); // set the time
-   paraview_dc.RegisterField("solution",&x);
-   paraview_dc.Save();
 
    return 0;
 }
 
 // Exact solution u
 double exact_solution(const Vector &x){
-   return (1.0) / (1 + pow(x(0), 2) + pow(x(1), 2));
+   int dim = x.Size();
+   if (dim == 2){
+      return ((2)/(sqrt(0.4*M_PI)))*exp(-2*(pow((x(0)-3),2)+pow((x(1)-3),2)));
+   }else if (dim == 3){
+      return ((2)/(sqrt(0.4*M_PI)))*exp(-2*(pow((x(0)-3),2)+pow((x(1)-3),2)+pow((x(2)-3),2)));
+   }
 }
 
-// Define the function f of Poisson problem
+// Grad of the solution u
+void exact_solution_grad(const Vector &x, Vector &u){
+   int dim = x.Size();
+   if (dim == 2){
+      u(0) = -7.1365 * (x(0) - 3) * exp((-2)*(pow((x(0) - 3),2) + pow((x(1) - 3),2)));
+      u(1) = -7.1365 * (x(1) - 3) * exp((-2)*(pow((x(0) - 3),2) + pow((x(1) - 3),2)));
+   } else if (dim == 3){
+      u(0) = -7.1365 * (x(0) - 3) * exp(-2*(pow((x(0)-3),2)+pow((x(1)-3),2)+pow((x(2)-3),2)));
+      u(1) = -7.1365 * (x(1) - 3) * exp(-2*(pow((x(0)-3),2)+pow((x(1)-3),2)+pow((x(2)-3),2)));
+      u(2) = -7.1365 * (x(2) - 3) * exp(-2*(pow((x(0)-3),2)+pow((x(1)-3),2)+pow((x(2)-3),2)));
+   }
+}
+
+// Laplacian of u
 double f_function(const Vector &x){
-   return ((-4.0)*(pow(x(0), 2) + pow(x(1), 2) - 1)) / pow((pow(x(0), 2) + pow(x(1), 2) + 1), 3);
+   int dim = x.Size();
+   if (dim == 2){
+      return  -exp((-2)*(pow((x(0) - 3),2) + pow((x(1) - 3),2)))*((28.546*pow(x(0),2) - 171.276*x(0) + 28.546*pow(x(1),2) - 171.276*x(1) + 499.555));
+   }else if (dim == 3){
+      return  -exp((-2)*(pow((x(0) - 3),2) + pow((x(1) - 3),2) + pow((x(2) - 3),2)))*((28.546*pow(x(0),2) - 171.276*x(0) + 28.546*pow(x(1),2) - 171.276*x(1) + 28.546*pow(x(2),2) - 171.276*x(2) + 749.332));
+   }
 }
